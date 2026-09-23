@@ -1,0 +1,223 @@
+{
+  "info": {
+    "name": "ForgeOps POC - SAML 2.0 SP-Initiated SSO",
+    "description": "Mirrors ./saml-sso-flow.sh: 1) authenticate the demo user to get an AM session, 2) hit the SimpleSAMLphp SP's authenticate.php which redirects to AM's SSORedirect endpoint with a SAMLRequest, 3) present the AM session cookie at that URL so AM issues an auto-submit HTML form containing a SAMLResponse, 4) extract and POST that SAMLResponse to the SP's ACS endpoint (completes the SSO handshake), 5) verify the SP now has an authenticated, federated session.\n\nBefore running:\n- AM's hosted IdP and the SP must already be in the same circle of trust (poc-cot) -- see INSTALLATION.md / the SAML rebuild runbook. Circle-of-trust membership must use the 'entityId|saml2' format (not '|IDPRole'/'|SPRole') or AM rejects the request with 'Issuer in Request is not valid'.\n- Disable 'SSL certificate verification' in Postman Settings > General, since AM/the SP use a self-signed cert (matches the -k in the shell script).\n- Unlike the WSL curl script, no --resolve trick is needed here -- Postman runs on Windows, which already has the poc.example.com hosts entry.\n- Requests run in order (Runner, or click Send top-to-bottom) -- each step feeds variables (and cookies, via Postman's cookie jar) into the next. Make sure Postman's cookie jar is enabled so the SP's session cookies from step 2 carry through to steps 4-5.\n- AM's auto-submit form line-wraps the base64 SAMLResponse using literal HTML character references (&#xd;&#xa;) instead of real whitespace; step 3's test script HTML-unescapes and strips it before use, mirroring a bug fix already applied to saml-sso-flow.sh.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://poc.example.com" },
+    { "key": "host_hdr", "value": "poc.example.com" },
+    { "key": "demo_user", "value": "demouser" },
+    { "key": "demo_password", "value": "Demo@12345" },
+    { "key": "session_token", "value": "" },
+    { "key": "sso_redirect_url", "value": "" },
+    { "key": "saml_response", "value": "" },
+    { "key": "relay_state", "value": "" },
+    { "key": "acs_action_url", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Authenticate demo user (AM)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-OpenAM-Username", "value": "{{demo_user}}" },
+          { "key": "X-OpenAM-Password", "value": "{{demo_password}}" },
+          { "key": "Host", "value": "{{host_hdr}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/am/json/realms/root/authenticate",
+          "host": [ "{{base_url}}" ],
+          "path": [ "am", "json", "realms", "root", "authenticate" ]
+        },
+        "description": "Simulates the demo user logging in directly to AM. Returns a tokenId which becomes the AM session cookie (iPlanetDirectoryPro) presented to the IdP endpoint in step 3."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('got tokenId', () => pm.expect(body.tokenId).to.be.a('string'));",
+              "pm.collectionVariables.set('session_token', body.tokenId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. SP-initiated SSO: hit SP authenticate.php",
+      "protocolProfileBehavior": {
+        "followRedirects": false
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/simplesaml/module.php/core/authenticate.php?as=default-sp&ReturnTo=%2Fsimplesaml%2F",
+          "host": [ "{{base_url}}" ],
+          "path": [ "simplesaml", "module.php", "core", "authenticate.php" ],
+          "query": [
+            { "key": "as", "value": "default-sp" },
+            { "key": "ReturnTo", "value": "%2Fsimplesaml%2F" }
+          ]
+        },
+        "description": "IMPORTANT: must NOT follow redirects (see protocolProfileBehavior.followRedirects = false) -- the AuthnRequest URL is in the Location header, not a followed body. The SP also sets its own session cookies here (Postman's cookie jar picks these up automatically and replays them in steps 4-5)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// SimpleSAMLphp sends either a raw 302/303 with a Location header, or an",
+              "// HTML meta-refresh/JS bounce page (200) -- both are valid ways to carry",
+              "// the AuthnRequest via the HTTP-Redirect binding; handle either.",
+              "let location = pm.response.headers.get('Location');",
+              "if (!location) {",
+              "  const body = pm.response.text();",
+              "  const hrefMatch = body.match(/id=\"redirlink\" href=\"([^\"]+)\"/);",
+              "  if (hrefMatch) {",
+              "    location = hrefMatch[1].replace(/&amp;/g, '&');",
+              "  }",
+              "}",
+              "pm.test('got the AM SSO redirect URL (header or HTML bounce page)', () => {",
+              "  pm.expect(location).to.be.a('string').and.not.empty;",
+              "});",
+              "console.log('SP redirect ->', location);",
+              "pm.collectionVariables.set('sso_redirect_url', location);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Present AM session cookie at AM's SSO endpoint",
+      "protocolProfileBehavior": {
+        "followRedirects": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" },
+          { "key": "Cookie", "value": "iPlanetDirectoryPro={{session_token}}" }
+        ],
+        "url": {
+          "raw": "{{sso_redirect_url}}"
+        },
+        "description": "AM validates the SAMLRequest's Issuer against the circle of trust and, if trusted, returns an auto-submit HTML form containing a base64 SAMLResponse. A 4xx/5xx here almost always means the IdP/SP aren't in the same circle of trust correctly (check the 'Issuer in Request is not valid' note in the collection description)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function htmlUnescape(str) {",
+              "  return str",
+              "    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))",
+              "    .replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))",
+              "    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')",
+              "    .replace(/&quot;/g, '\"').replace(/&#39;/g, \"'\");",
+              "}",
+              "",
+              "pm.test('AM did not reject the SAML request', () => {",
+              "  pm.expect(pm.response.code).to.be.below(400);",
+              "});",
+              "",
+              "const body = pm.response.text();",
+              "const samlMatch = body.match(/name=\"SAMLResponse\" value=\"([^\"]+)\"/);",
+              "const relayMatch = body.match(/name=\"RelayState\" value=\"([^\"]*)\"/);",
+              "const actionMatch = body.match(/<form[^>]+action=\"([^\"]+)\"/);",
+              "",
+              "pm.test('SAMLResponse present in AM response', () => pm.expect(samlMatch).to.not.be.null);",
+              "",
+              "if (samlMatch) {",
+              "  const cleaned = htmlUnescape(samlMatch[1]).replace(/\\s+/g, '');",
+              "  pm.collectionVariables.set('saml_response', cleaned);",
+              "}",
+              "if (relayMatch) {",
+              "  pm.collectionVariables.set('relay_state', htmlUnescape(relayMatch[1]));",
+              "}",
+              "if (actionMatch) {",
+              "  pm.collectionVariables.set('acs_action_url', htmlUnescape(actionMatch[1]));",
+              "  console.log('ACS action URL ->', htmlUnescape(actionMatch[1]));",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. POST SAMLResponse to the SP's ACS endpoint",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" },
+          { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "SAMLResponse", "value": "{{saml_response}}" },
+            { "key": "RelayState", "value": "{{relay_state}}" }
+          ]
+        },
+        "url": {
+          "raw": "{{acs_action_url}}"
+        },
+        "description": "Completes the SSO handshake. acs_action_url is taken from the form AM returned in step 3 (falls back to nothing if step 3 didn't populate it -- re-run step 3 if this is empty). A 200/303 here means the SP accepted and validated the assertion."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('SP accepted the SAMLResponse', () => {",
+              "  pm.expect(pm.response.code).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Verify SP session",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/simplesaml/module.php/core/authenticate.php?as=default-sp&ReturnTo=%2Fsimplesaml%2F",
+          "host": [ "{{base_url}}" ],
+          "path": [ "simplesaml", "module.php", "core", "authenticate.php" ],
+          "query": [
+            { "key": "as", "value": "default-sp" },
+            { "key": "ReturnTo", "value": "%2Fsimplesaml%2F" }
+          ]
+        },
+        "description": "This SP image doesn't ship the 'admin' module (module.php/admin/test/* 404s). With an active session, SimpleSAMLphp instead serves its status page directly (HTTP 200, showing the federated attributes) rather than redirecting back to AM -- relies on the SP session cookies Postman picked up in step 2/4."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('SP session is authenticated and federated from AM', () => {",
+              "  const body = pm.response.text();",
+              "  pm.expect(body).to.include('SPNameQualifier');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

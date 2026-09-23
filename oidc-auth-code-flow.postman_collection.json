@@ -1,0 +1,172 @@
+{
+  "info": {
+    "name": "ForgeOps POC - OIDC Authorization Code Flow",
+    "description": "Mirrors ./oidc-auth-code-flow.sh: 1) authenticate the demo user to get an AM session, 2) call /oauth2/authorize with that session to get an authorization code, 3) exchange the code for tokens, 4) call /oauth2/userinfo with the access token.\n\nBefore running:\n- Run oidc-setup-client.sh first (creates the client + demo user).\n- Disable 'SSL certificate verification' in Postman Settings > General, since AM uses a self-signed cert (matches the -k in the shell script).\n- Requests run in order (Runner or click Send top-to-bottom) - each step feeds variables into the next.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://poc.example.com/am" },
+    { "key": "host_hdr", "value": "poc.example.com" },
+    { "key": "client_id", "value": "poc-test-client" },
+    { "key": "client_secret", "value": "poc-test-secret-123" },
+    { "key": "redirect_uri", "value": "https://poc.example.com/callback" },
+    { "key": "demo_user", "value": "demouser" },
+    { "key": "demo_password", "value": "Demo@12345" },
+    { "key": "state", "value": "xyz123" },
+    { "key": "session_token", "value": "" },
+    { "key": "authz_code", "value": "" },
+    { "key": "access_token", "value": "" },
+    { "key": "id_token", "value": "" },
+    { "key": "refresh_token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Authenticate demo user",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-OpenAM-Username", "value": "{{demo_user}}" },
+          { "key": "X-OpenAM-Password", "value": "{{demo_password}}" },
+          { "key": "Host", "value": "{{host_hdr}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/json/realms/root/authenticate",
+          "host": [ "{{base_url}}" ],
+          "path": [ "json", "realms", "root", "authenticate" ]
+        },
+        "description": "Simulates the demo user logging in. Returns a tokenId which becomes the AM session cookie (iPlanetDirectoryPro) used in step 2."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('got tokenId', () => pm.expect(body.tokenId).to.be.a('string'));",
+              "pm.collectionVariables.set('session_token', body.tokenId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Authorize (get auth code)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disabledSystemHeaders": {}
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" },
+          { "key": "Cookie", "value": "iPlanetDirectoryPro={{session_token}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/oauth2/realms/root/authorize?client_id={{client_id}}&response_type=code&scope=openid profile email&redirect_uri={{redirect_uri}}&state={{state}}",
+          "host": [ "{{base_url}}" ],
+          "path": [ "oauth2", "realms", "root", "authorize" ],
+          "query": [
+            { "key": "client_id", "value": "{{client_id}}" },
+            { "key": "response_type", "value": "code" },
+            { "key": "scope", "value": "openid profile email" },
+            { "key": "redirect_uri", "value": "{{redirect_uri}}" },
+            { "key": "state", "value": "{{state}}" }
+          ]
+        },
+        "description": "IMPORTANT: this request must NOT follow redirects (see protocolProfileBehavior.followRedirects = false above) -- the authorization code is in the Location header of the 302 response, not in a followed response body. The client has isConsentImplied=true so no consent page is returned."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('got redirect with Location header', () => {",
+              "  pm.expect(pm.response.code).to.be.oneOf([302, 303]);",
+              "  pm.expect(pm.response.headers.has('Location')).to.be.true;",
+              "});",
+              "const location = pm.response.headers.get('Location');",
+              "console.log('Location:', location);",
+              "const match = location && location.match(/[?&]code=([^&]+)/);",
+              "pm.test('authorization code present', () => pm.expect(match).to.not.be.null);",
+              "if (match) {",
+              "  pm.collectionVariables.set('authz_code', decodeURIComponent(match[1]));",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Exchange code for tokens",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" },
+          { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "grant_type", "value": "authorization_code" },
+            { "key": "code", "value": "{{authz_code}}" },
+            { "key": "redirect_uri", "value": "{{redirect_uri}}" },
+            { "key": "client_id", "value": "{{client_id}}" },
+            { "key": "client_secret", "value": "{{client_secret}}" }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/oauth2/realms/root/access_token",
+          "host": [ "{{base_url}}" ],
+          "path": [ "oauth2", "realms", "root", "access_token" ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('token exchange succeeded', () => pm.expect(body.access_token).to.be.a('string'));",
+              "pm.collectionVariables.set('access_token', body.access_token || '');",
+              "pm.collectionVariables.set('id_token', body.id_token || '');",
+              "pm.collectionVariables.set('refresh_token', body.refresh_token || '');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Get userinfo",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Host", "value": "{{host_hdr}}" },
+          { "key": "Authorization", "value": "Bearer {{access_token}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/oauth2/realms/root/userinfo",
+          "host": [ "{{base_url}}" ],
+          "path": [ "oauth2", "realms", "root", "userinfo" ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('userinfo returned sub claim', () => {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.sub).to.be.a('string');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

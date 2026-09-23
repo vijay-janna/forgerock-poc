@@ -1,0 +1,79 @@
+vijay@LAPTOP-GM83JDVQ:/mnt/c/Users/chamu/PoC$ bash setup-wsl.sh
+==> Checking Docker Desktop WSL integration
+docker OK: Docker version 29.8.0, build 88096ef
+==> apt packages: jq, python3-venv, ca-certificates, curl
+[sudo] password for vijay: 
+Hit:1 https://apt.releases.hashicorp.com noble InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease                                                 
+Hit:3 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:5 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Reading package lists... Done
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+curl is already the newest version (8.5.0-2ubuntu10.13).
+curl set to manually installed.
+ca-certificates is already the newest version (20260601~24.04.1).
+ca-certificates set to manually installed.
+python3-venv is already the newest version (3.12.3-0ubuntu2.1).
+The following additional packages will be installed:
+  libjq1 libonig5
+The following NEW packages will be installed:
+  jq libjq1 libonig5
+0 upgraded, 3 newly installed, 0 to remove and 9 not upgraded.
+Need to get 380 kB of archives.
+After this operation, 1127 kB of additional disk space will be used.
+Get:1 http://archive.ubuntu.com/ubuntu noble/main amd64 libonig5 amd64 6.9.9-1build1 [172 kB]
+Get:2 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libjq1 amd64 1.7.1-3ubuntu0.24.04.2 [142 kB]
+Get:3 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 jq amd64 1.7.1-3ubuntu0.24.04.2 [65.7 kB]
+Fetched 380 kB in 0s (3929 kB/s)
+Selecting previously unselected package libonig5:amd64.
+(Reading database ... 64568 files and directories currently installed.)
+Preparing to unpack .../libonig5_6.9.9-1build1_amd64.deb ...
+Unpacking libonig5:amd64 (6.9.9-1build1) ...
+Selecting previously unselected package libjq1:amd64.
+Preparing to unpack .../libjq1_1.7.1-3ubuntu0.24.04.2_amd64.deb ...
+Unpacking libjq1:amd64 (1.7.1-3ubuntu0.24.04.2) ...
+Selecting previously unselected package jq.
+Preparing to unpack .../jq_1.7.1-3ubuntu0.24.04.2_amd64.deb ...
+Unpacking jq (1.7.1-3ubuntu0.24.04.2) ...
+Setting up libonig5:amd64 (6.9.9-1build1) ...
+Setting up libjq1:amd64 (1.7.1-3ubuntu0.24.04.2) ...
+Setting up jq (1.7.1-3ubuntu0.24.04.2) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+kubectl already installed
+==> Installing kubectx/kubens
+==> Installing kustomize
+v5.8.1
+kustomize installed to //tmp/kustomize
+==> Installing helm
+Downloading https://get.helm.sh/helm-v3.22.0-linux-amd64.tar.gz
+Verifying checksum... Done.
+Preparing to install helm into /usr/local/bin
+helm installed into /usr/local/bin/helm
+==> Installing minikube
+
+==> Versions installed:
+docker     Docker version 29.8.0, build 88096ef
+kubectl    
+kubens     Switch between Kubernetes namespaces.
+
+USAGE:
+  kubens                    : list the namespaces in the current context
+  kubens <NAME>             : change the active namespace of current context
+  kubens -                  : switch to the previous namespace in this context
+  kubens -c, --current      : show the current namespace
+  kubens -h,--help          : show this message
+
+  (This executable is the legacy bash-based implementation, consider upgrading to Go-based implementation.)
+Switch between Kubernetes namespaces.
+kustomize  {v5.8.1  2026-02-09T16:15:27Z   }
+helm       v3.22.0+g144ca65
+jq         jq-1.7
+minikube   v1.39.0
+
+Done. Next: bash deploy.sh
+
+

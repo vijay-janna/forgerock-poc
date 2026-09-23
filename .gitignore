@@ -1,0 +1,3 @@
+# One-off diagnostic/debug scripts from live troubleshooting sessions --
+# not part of the reusable tooling (deploy.sh, saml-*.sh, etc.), just scratch.
+_*.sh

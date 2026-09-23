@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saml-sp
+  namespace: poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: saml-sp}
+  template:
+    metadata:
+      labels: {app: saml-sp}
+    spec:
+      containers:
+      - name: sp
+        image: kenchan0130/simplesamlphp:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SIMPLESAMLPHP_IDP_ADMIN_PASSWORD
+          value: "poc-sp-admin-secret"
+        volumeMounts:
+        - name: sp-config
+          mountPath: /var/www/simplesamlphp/config/authsources.php
+          subPath: authsources.php
+        - name: sp-config
+          mountPath: /var/www/simplesamlphp/metadata/saml20-idp-remote.php
+          subPath: saml20-idp-remote.php
+      volumes:
+      - name: sp-config
+        configMap:
+          name: sp-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: saml-sp
+  namespace: poc
+spec:
+  selector: {app: saml-sp}
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: saml-sp
+  namespace: poc
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts: [poc.example.com]
+    secretName: tls-poc.example.com
+  rules:
+  - host: poc.example.com
+    http:
+      paths:
+      - path: /simplesaml
+        pathType: Prefix
+        backend:
+          service:
+            name: saml-sp
+            port: {number: 80}
