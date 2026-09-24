@@ -1,0 +1,26 @@
+# Helm values for the identity-platform chart (ForgeOps 7.5) -- the POC's
+# deployment config as code. Used by deploy.sh (helm upgrade --install -f) and
+# validated by ci-validate.sh / .github/workflows/ci.yml (helm template).
+# Only overrides live here; everything else is the chart default
+# (helm show values oci://us-docker.pkg.dev/forgeops-public/charts/identity-platform --version 7.5).
+
+platform:
+  ingress:
+    hosts:
+      - poc.example.com          # deploy.sh can override with INGRESS_HOST
+
+ds_idrepo:
+  volumeClaimSpec:
+    storageClassName: standard   # minikube's provisioner (chart default "fast" doesn't exist)
+  resources:
+    # Chart default 1366Mi gets OOMKilled after ~1-2h (JVM heap = 75% of the
+    # limit) -- INSTALLATION.md 4.7. ci-validate.sh asserts this value.
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+
+ds_cts:
+  volumeClaimSpec:
+    storageClassName: standard

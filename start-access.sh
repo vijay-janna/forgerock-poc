@@ -32,6 +32,7 @@ LOG_DIR="${LOG_DIR:-/tmp/poc-logs}"
 SKIP_PORT_FORWARD="${SKIP_PORT_FORWARD:-false}"
 SKIP_TUNNEL="${SKIP_TUNNEL:-false}"
 AM_WAIT="${AM_WAIT:-300}"
+MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-14g}"
 SKIP_TREES="${SKIP_TREES:-false}"
 MFA_TREE="${MFA_TREE:-PocMFA}"
 AM_PF_PORT="${AM_PF_PORT:-18090}"
@@ -70,10 +71,19 @@ if minikube status >/dev/null 2>&1; then
   echo "    minikube already running"
 else
   echo "    starting minikube"
-  minikube start --cpus=3 --memory=9g --disk-size=40g --cni=true \
+  minikube start --cpus=3 --memory="$MINIKUBE_MEMORY" --disk-size=40g --cni=true \
     --kubernetes-version=stable \
     --addons=ingress,volumesnapshots,metrics-server \
     --driver=docker
+fi
+
+# An existing cluster keeps the memory it was created with; raise the node
+# container's limit in place if it's below MINIKUBE_MEMORY (no restart needed)
+WANT_BYTES=$(numfmt --from=iec "${MINIKUBE_MEMORY^^}" 2>/dev/null || echo 0)
+HAVE_BYTES=$(docker inspect minikube --format '{{.HostConfig.Memory}}' 2>/dev/null || echo 0)
+if [ "$WANT_BYTES" -gt 0 ] && [ "$HAVE_BYTES" -gt 0 ] && [ "$HAVE_BYTES" -lt "$WANT_BYTES" ]; then
+  echo "    raising minikube container memory $(numfmt --to=iec "$HAVE_BYTES") -> $MINIKUBE_MEMORY"
+  docker update --memory "$MINIKUBE_MEMORY" --memory-swap "$MINIKUBE_MEMORY" minikube >/dev/null     || echo "    WARNING: docker update failed -- node may run out of memory (INSTALLATION.md 4.7)"
 fi
 
 echo "==> 3/6 Checking AM pod (waits up to ${AM_WAIT}s for readiness)"

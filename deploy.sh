@@ -11,6 +11,9 @@ NAMESPACE="${NAMESPACE:-poc}"
 INGRESS_HOST="${INGRESS_HOST:-poc.example.com}"
 FORGEOPS_BRANCH="${FORGEOPS_BRANCH:-release/7.5-20251119}"
 FORGEOPS_DIR="${FORGEOPS_DIR:-$HOME/forgeops}"
+# 9g was too small once ds-idrepo got 2Gi: the node ran at 99% and the API
+# server stopped responding (INSTALLATION.md 4.7)
+MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-14g}"
 CHART_VERSION="${CHART_VERSION:-7.5}"
 
 echo "==> Namespace:      $NAMESPACE"
@@ -34,7 +37,7 @@ fi
 
 echo "==> 2/6 Starting minikube (skipped if already running)"
 if ! minikube status >/dev/null 2>&1; then
-  minikube start --cpus=3 --memory=9g --disk-size=40g --cni=true \
+  minikube start --cpus=3 --memory="$MINIKUBE_MEMORY" --disk-size=40g --cni=true \
     --kubernetes-version=stable \
     --addons=ingress,volumesnapshots,metrics-server \
     --driver=docker
@@ -49,16 +52,12 @@ kubens "$NAMESPACE"
 ( cd "$FORGEOPS_DIR/charts/scripts" && ./install-prereqs )
 
 echo "==> 4/6 Helm deploy: identity-platform"
-# ds-idrepo memory: the chart's 1366Mi default gets OOMKilled after ~1-2h of
-# use (the image sizes the JVM heap at MaxRAMPercentage=75, leaving too little
-# for non-heap memory) -- see INSTALLATION.md 4.7.
+# All overrides (storage classes, ds-idrepo memory, ingress host) live in
+# values-poc.yaml -- the same file CI validates. INGRESS_HOST still wins if set.
 helm upgrade --install identity-platform \
   oci://us-docker.pkg.dev/forgeops-public/charts/identity-platform \
   --version "$CHART_VERSION" --namespace "$NAMESPACE" --timeout 15m \
-  --set "ds_idrepo.resources.requests.memory=2Gi" \
-  --set "ds_idrepo.resources.limits.memory=2Gi" \
-  --set "ds_idrepo.volumeClaimSpec.storageClassName=standard" \
-  --set "ds_cts.volumeClaimSpec.storageClassName=standard" \
+  -f "$(dirname "$0")/values-poc.yaml" \
   --set "platform.ingress.hosts={$INGRESS_HOST}"
 
 echo "==> 5/6 Waiting for pods to become ready (this can take several minutes)"

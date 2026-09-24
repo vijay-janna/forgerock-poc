@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helper, sourced by oidc-setup-client.sh and mfa-otp-flow.sh:
 #   ensure_idm_user <userName> <password> <givenName> <sn> <mail>
 #

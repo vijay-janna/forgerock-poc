@@ -57,7 +57,7 @@ assumes a Bash environment — run these inside WSL2 Ubuntu, not native PowerShe
 | minikube | 1.33+ | `choco install minikube` |
 | Python 3 | 3.12+ | for ForgeOps helper scripts |
 
-Minimum host resources for minikube: 4 CPU / 10GB RAM / 60GB disk free.
+Minimum host resources: 4 CPU / 20GB RAM (the minikube node alone gets 14GB) / 60GB disk free.
 
 ## 2. Get the ForgeOps repo
 
@@ -71,7 +71,7 @@ git checkout -b poc-local
 ## 3. Start the local cluster
 
 ```bash
-minikube start --cpus=3 --memory=9g --disk-size=40g --cni=true \
+minikube start --cpus=3 --memory=14g --disk-size=40g --cni=true \
   --kubernetes-version=stable \
   --addons=ingress,volumesnapshots,metrics-server \
   --driver=docker
@@ -157,12 +157,16 @@ on the AM-related secret if the key above isn't present.)
   TOTP: `bash mfa-setup-tree.sh` creates the `PocMFA` tree, and `bash mfa-otp-flow.sh`
   tests it end-to-end (details in INSTALLATION.md §8).
 - **LDAP/DS**: connect `ldapsearch`/Apache Directory Studio to the `ds-idrepo`
-  service (`kubectl port-forward`) and inspect the identity repository.
+  service (`kubectl port-forward`) and inspect the identity repository. Done:
+  `bash ds-connect.sh` opens the tunnel and prints connection details, and
+  `bash ds-inspect.sh` gives a guided read-only tour (INSTALLATION.md §8).
 - **IDM provisioning**: define a mapping/reconciliation between IDM and DS via the
   admin UI or `conf/sync.json`.
-- **CI/CD**: this repo structure (Helm charts + Kustomize overlays under `forgeops/`)
-  is exactly what you'd wire into a pipeline — practice scripting steps 3–6 as a
-  `deploy.sh` or GitHub Actions job for handover documentation.
+- **CI/CD**: deployment config as code plus a validation pipeline. Done:
+  `values-poc.yaml` holds the Helm overrides used by `deploy.sh`, and
+  `.github/workflows/ci.yml` runs `ci-validate.sh` on every push (shellcheck,
+  `helm template`, kubeconform schema checks, and policy assertions such as the
+  DS memory fix). Run `bash ci-validate.sh` locally before pushing (INSTALLATION.md §9).
 
 ## 9. Tear down
 

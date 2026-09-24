@@ -37,7 +37,7 @@ All components deploy into one Kubernetes namespace (`poc`) via a single Helm ch
 | WSL2 (Ubuntu) | Linux environment for the Bash-based tooling |
 | kubectl, helm, kustomize, jq, minikube, kubens | Cluster tooling |
 
-Minimum host resources for minikube: 4 CPU / 10GB RAM / 60GB disk free.
+Minimum host resources: 4 CPU / 20GB RAM (the minikube node alone gets 14GB) / 60GB disk free.
 
 Scripted install of the CLI tools: [setup-wsl.sh](setup-wsl.sh).
 
@@ -55,7 +55,7 @@ bash deploy.sh       # clones forgeops, starts minikube, deploys the platform vi
 
 `deploy.sh` automates:
 1. Clone/update `forgeops` at `release/7.5-20251119`
-2. Start minikube (`--cpus=3 --memory=9g --disk-size=40g`, ingress/volumesnapshots/metrics-server addons)
+2. Start minikube (`--cpus=3 --memory=14g --disk-size=40g`, ingress/volumesnapshots/metrics-server addons)
 3. Create the `poc` namespace, install prerequisites (secret-agent, cert-manager, NGINX ingress)
 4. `helm upgrade --install identity-platform oci://us-docker.pkg.dev/forgeops-public/charts/identity-platform --version 7.5 --timeout 15m`
 5. Wait for all pods to become Ready
@@ -275,6 +275,13 @@ and permanently in [deploy.sh](deploy.sh) (`--set ds_idrepo.resources...`). A
 `kubectl patch` rather than `helm upgrade` avoids re-running the `amster`
 config-import hook.
 
+**Follow-on:** with DS at 2Gi, the original 9g minikube node ran at 99% memory
+and ~750% CPU, and the Kubernetes API server stopped answering (`kubectl`:
+`TLS handshake timeout`). The node now gets 14g. New clusters get it from
+`deploy.sh`/`start-access.sh` (`MINIKUBE_MEMORY`). For an existing cluster,
+`start-access.sh` raises the container limit in place (`docker update --memory
+14g --memory-swap 14g minikube`, no restart needed).
+
 ### 4.8 AM stuck on "Can't open boot keystore" after a node restart
 
 **Symptom:** after Docker Desktop/minikube restarts, `am` shows `0/1 Running`.
@@ -418,8 +425,62 @@ DELETE_CLUSTER=true bash teardown.sh   # also deletes the minikube cluster
   - WebAuthn would slot into the same place (*WebAuthn Registration* /
     *WebAuthn Authentication* nodes), but it needs a real browser authenticator
     and an HTTPS origin matching `poc.example.com`, so it can't be tested with curl.
-- **LDAP/DS**: `kubectl port-forward` to `ds-idrepo` and inspect the identity repository.
+- **LDAP/DS** (done): [ds-connect.sh](ds-connect.sh) port-forwards `ds-idrepo`
+  to `localhost:1636` (LDAPS) and `:1389` (LDAP), exports the DS CA (plus a Windows
+  copy under `%USERPROFILE%\poc-ds\`), verifies the TLS handshake and prints
+  bind details for `ldapsearch` and Apache Directory Studio.
+  [ds-inspect.sh](ds-inspect.sh) is a read-only tour: naming contexts, the
+  `ou=identities` layout, users, service accounts, one user broken down by which
+  product owns each attribute, and which users have MFA devices. It never prints
+  secrets. Gotchas:
+  - The DS certificate is issued for `*.ds-idrepo`/`*.ds`/`*.ds-cts`, not
+    `localhost`. Through the port-forward the CA verifies but the hostname doesn't
+    match: use `LDAPTLS_REQCERT=allow` for OpenLDAP `ldapsearch`, and trust the
+    certificate once in Directory Studio.
+  - `uid=admin` is the directory superuser. Use it for inspection only; entries
+    written behind IDM's back break the platform (§5 item 3).
+  - IDM doesn't *sync* to `ds-idrepo`, it *is* backed by it: `managed/user` maps
+    straight onto `ou=people,ou=identities` (`repo.ds.json`), and AM reads the
+    same entries. One shared store, no reconciliation involved.
 - **IDM provisioning**: define a mapping/reconciliation between IDM and DS.
-- **CI/CD**: script this whole runbook (already captured in `deploy.sh`/`teardown.sh`)
-  into a pipeline job — this is directly what a production IAM deployment pipeline
-  would automate.
+- **CI/CD** (done, validation pipeline): see §9.
+
+---
+
+## 9. CI/CD
+
+**Config as code.** All Helm overrides live in [values-poc.yaml](values-poc.yaml):
+ingress host, `standard` storage class for both DS StatefulSets, and ds-idrepo
+at 2Gi (§4.7). [deploy.sh](deploy.sh) installs with `-f values-poc.yaml`. Moving
+the old `--set` flags into the file was verified to render identical manifests.
+The only difference is the chart's `deployment-date` annotation, which is stamped
+at render time. That annotation also means **every `helm upgrade` restarts every
+pod**.
+
+**Pipeline.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every
+push, every PR and on demand. It is a thin wrapper around
+[ci-validate.sh](ci-validate.sh), so a local run gives the same result:
+
+| Step | What | Fails on |
+|---|---|---|
+| shellcheck | all tracked `*.sh` | warnings/errors (style notes allowed, e.g. the deliberate unquoted `$CURL_OPTS`) |
+| helm template | renders the chart with `values-poc.yaml` | chart/values errors |
+| kubeconform | schema-validates rendered manifests + `saml-sp.yaml` | invalid resources (CRDs without bundled schemas are skipped) |
+| policy | asserts the fixes this POC depends on: ds-idrepo memory 2Gi, `standard` storage class, ingress host | a silent regression (verified: reverting DS to 1366Mi fails the build) |
+
+Tool versions are pinned in the workflow (shellcheck, kubeconform, yq, helm). The
+rendered manifests are uploaded as a build artifact for review.
+
+Run locally (needs shellcheck, helm, kubeconform, yq in `PATH`):
+```bash
+bash ci-validate.sh
+```
+
+**Why no deploy stage.** The repo is private. A GitHub-hosted runner can't reach
+the local minikube, and a full platform deploy (~10–14 GB RAM) doesn't fit on
+standard private-repo runners. Options if a deploy stage is wanted later:
+- **Larger (paid) runner:** start minikube on the runner, run `deploy.sh`, then run
+  `oidc-auth-code-flow.sh` / `mfa-otp-flow.sh` / `saml-sso-flow.sh` as integration
+  tests, then tear down. About 20–30 minutes per run.
+- **Self-hosted runner in WSL:** real CD to the local cluster. Only acceptable on
+  this private repo, because the runner executes repo code on the workstation.
