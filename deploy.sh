@@ -49,9 +49,14 @@ kubens "$NAMESPACE"
 ( cd "$FORGEOPS_DIR/charts/scripts" && ./install-prereqs )
 
 echo "==> 4/6 Helm deploy: identity-platform"
+# ds-idrepo memory: the chart's 1366Mi default gets OOMKilled after ~1-2h of
+# use (the image sizes the JVM heap at MaxRAMPercentage=75, leaving too little
+# for non-heap memory) -- see INSTALLATION.md 4.7.
 helm upgrade --install identity-platform \
   oci://us-docker.pkg.dev/forgeops-public/charts/identity-platform \
   --version "$CHART_VERSION" --namespace "$NAMESPACE" --timeout 15m \
+  --set "ds_idrepo.resources.requests.memory=2Gi" \
+  --set "ds_idrepo.resources.limits.memory=2Gi" \
   --set "ds_idrepo.volumeClaimSpec.storageClassName=standard" \
   --set "ds_cts.volumeClaimSpec.storageClassName=standard" \
   --set "platform.ingress.hosts={$INGRESS_HOST}"

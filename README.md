@@ -153,7 +153,9 @@ on the AM-related secret if the key above isn't present.)
   against `/am/oauth2/...`.
 - **SAML**: configure AM as an IdP, stand up a second AM realm or a SAML SP test app
   as the relying party.
-- **MFA**: enable a WebAuthn or OTP module in an AM authentication tree.
+- **MFA**: enable a WebAuthn or OTP module in an AM authentication tree. Done for
+  TOTP: `bash mfa-setup-tree.sh` creates the `PocMFA` tree, and `bash mfa-otp-flow.sh`
+  tests it end-to-end (details in INSTALLATION.md §8).
 - **LDAP/DS**: connect `ldapsearch`/Apache Directory Studio to the `ds-idrepo`
   service (`kubectl port-forward`) and inspect the identity repository.
 - **IDM provisioning**: define a mapping/reconciliation between IDM and DS via the

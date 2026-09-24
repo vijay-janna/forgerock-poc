@@ -13,6 +13,7 @@
 #              validates the incoming FQDN against its configured server URL.
 #   CURL_OPTS  Extra curl flags (default: -k, to accept the local self-signed
 #              cert issued by cert-manager's platform CA)
+#   IDM_URL    IDM base URL used to create the demo user (see lib-idm-user.sh)
 set -euo pipefail
 
 NAMESPACE=poc
@@ -24,6 +25,7 @@ CLIENT_SECRET="${CLIENT_SECRET:-poc-test-secret-123}"
 REDIRECT_URI="${REDIRECT_URI:-https://poc.example.com/callback}"
 DEMO_USER="${DEMO_USER:-demouser}"
 DEMO_PASSWORD="${DEMO_PASSWORD:-Demo@12345}"
+. "$(dirname "$0")/lib-idm-user.sh"
 
 echo "==> AM base URL: $BASE_URL"
 
@@ -84,28 +86,10 @@ else
   fi
 fi
 
-# The identity REST endpoint does NOT enforce username uniqueness on
-# _action=create -- calling it twice creates two ambiguous directory entries
-# with the same username, which then breaks authentication entirely. Always
-# check first and skip if the user already exists.
-EXISTING=$(curl -s $CURL_OPTS \
-  -H "Accept-API-Version: resource=3.0, protocol=1.0" \
-  -H "iPlanetDirectoryPro: $ADMIN_TOKEN" -H "Host: $HOST_HDR" \
-  "$BASE_URL/json/realms/root/users?_queryFilter=true&_fields=username" \
-  | grep -c "\"$DEMO_USER\"" || true)
-
-if [ "$EXISTING" -gt 0 ]; then
-  echo "    demo user '$DEMO_USER' already exists, skipping creation"
-else
-  echo "    creating demo user '$DEMO_USER'"
-  curl -s $CURL_OPTS -X POST \
-    -H 'Content-Type: application/json' \
-    -H "Accept-API-Version: resource=3.0, protocol=1.0" \
-    -H "iPlanetDirectoryPro: $ADMIN_TOKEN" \
-    -H "Host: $HOST_HDR" \
-    --data "{\"username\":\"$DEMO_USER\",\"userPassword\":\"$DEMO_PASSWORD\",\"cn\":\"Demo User\",\"sn\":\"User\",\"mail\":\"demo@poc.example.com\"}" \
-    "$BASE_URL/json/realms/root/users?_action=create" | grep -oE '"code":[0-9]+|"username":"[^"]+"' || true
-fi
+# Created through IDM, not AM's /json/users endpoint -- see lib-idm-user.sh
+# for why (AM-created users break the Login tree and the end-user UI).
+echo "==> Ensuring demo user '$DEMO_USER'"
+ensure_idm_user "$DEMO_USER" "$DEMO_PASSWORD" "Sample" "User" "demo@poc.example.com"
 
 echo
 echo "Done. Client '$CLIENT_ID' / secret '$CLIENT_SECRET' registered."

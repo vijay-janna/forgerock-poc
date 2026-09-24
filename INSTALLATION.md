@@ -256,12 +256,47 @@ so it can't find the already-running cluster.
 elevates internally and prompts for the sudo password itself only when it actually
 needs to configure a network route.
 
+### 4.7 `ds-idrepo` OOMKilled after an hour or two of use
+
+**Symptom:** `ds-idrepo-0` shows restarts. `kubectl get pod ds-idrepo-0 -o json`
+has `lastState.terminated.reason: OOMKilled` (exit code 137). While DS restarts, AM
+and IDM lose their directory.
+
+**Cause:** the chart's default limit is `1366Mi`, and the DS image starts the JVM
+with `-XX:MaxRAMPercentage=75`, so the heap alone can take ~1 GiB. Once heap and
+non-heap memory (metaspace, threads, buffers) are both in use, the container
+exceeds its limit.
+
+**Fix:** raised ds-idrepo to `2Gi` (request and limit). Live:
+```bash
+kubectl patch sts ds-idrepo -n poc --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"limits":{"memory":"2Gi"},"requests":{"cpu":"500m","memory":"2Gi"}}}]'
+```
+and permanently in [deploy.sh](deploy.sh) (`--set ds_idrepo.resources...`). A
+`kubectl patch` rather than `helm upgrade` avoids re-running the `amster`
+config-import hook.
+
+### 4.8 AM stuck on "Can't open boot keystore" after a node restart
+
+**Symptom:** after Docker Desktop/minikube restarts, `am` shows `0/1 Running`.
+The startup probe gets HTTP 500, and the logs show `Can't open boot keystore`,
+then `Configuration store is not available` on every request.
+
+**Cause:** the openam container restarts inside the *same* pod, so its `emptyDir`
+home survives. The image's entrypoint isn't idempotent (`mkdir
+.../keystores/boot` fails with "File exists"), which leaves AM unable to read its
+boot keystore.
+
+**Fix:** `kubectl delete pod -n poc -l app=am`. The new pod gets a clean
+`emptyDir`. [start-access.sh](start-access.sh) (step 3) now does this
+automatically. It then recreates the `PocMFA` tree (step 4), because auth
+trees live in that `emptyDir` too.
+
 ---
 
 ## 5. OAuth2/OIDC REST API gotchas (found while building the demo scripts)
 
 Building [oidc-setup-client.sh](oidc-setup-client.sh) and
-[oidc-auth-code-flow.sh](oidc-auth-code-flow.sh) surfaced two AM REST behaviors
+[oidc-auth-code-flow.sh](oidc-auth-code-flow.sh) surfaced three AM REST behaviors
 worth knowing before scripting against it in production:
 
 1. **`POST .../users?_action=create` does not enforce username uniqueness.**
@@ -280,6 +315,18 @@ worth knowing before scripting against it in production:
    "error_description":"Unknown Signing Algorithm"}`. Fix: check existence first
    (`GET` the client) and only `PUT`-create when it's genuinely absent; treat
    config changes to an existing client as a deliberate, separate action.
+3. **Don't create end users through AM's `/json/.../users?_action=create` at all.
+   Create them through IDM (`POST /openidm/managed/user?_action=create`).** AM writes
+   a bare LDAP entry. It's missing IDM's `fr-idm-managed-user-hybrid-obj` objectClass
+   and its `fr-idm-managed-user-meta` record, so IDM queries never return the user.
+   Symptoms: the platform `Login` tree fails after the password check ("No object to
+   increment" / "Login count is not supported for this object"), and the end-user
+   UI (`/enduser`) shows an empty dashboard because every `/openidm` call returns
+   503. Both scripts now create users via IDM (shared helper
+   [lib-idm-user.sh](lib-idm-user.sh), which authenticates as AM's
+   `idm-provisioning` client). A user created the old way is detected and
+   recreated with the same username/password and a new `fr-idm-uuid`. The IDM
+   password policy rejects passwords that contain the userName, givenName or sn.
 
 Also note: AM validates the incoming request's `Host` header against its
 configured FQDN — REST calls made against `localhost` (e.g. via
@@ -331,7 +378,46 @@ DELETE_CLUSTER=true bash teardown.sh   # also deletes the minikube cluster
 - **SAML**: configure AM as an IdP; stand up a SAML SP test app as the relying party.
   Console-based rebuild walkthrough (after the REST/Amster automation attempts hit
   dead ends): [SAML Federation Rebuild](https://claude.ai/artifact/U24QfzggdsevuuJzdiC1kV).
-- **MFA**: enable a WebAuthn or OTP module in an AM authentication tree.
+- **MFA** (done — TOTP/OATH): [mfa-setup-tree.sh](mfa-setup-tree.sh) creates a `PocMFA`
+  tree in the root realm (username/password → Data Store Decision → OATH Token
+  Verifier; users with no device go through OATH Registration first, then straight
+  back to the Verifier to confirm their first code). The default `Login` tree is
+  untouched. [mfa-otp-flow.sh](mfa-otp-flow.sh) tests it end-to-end without a phone:
+  it registers a device for a dedicated `mfauser`, computes RFC 6238 codes from the
+  `otpauth://` secret, and checks that a wrong code gets HTTP 401 and a fresh correct
+  one gets a session. Browser (scan the QR with any authenticator app):
+  `https://poc.example.com/am/XUI/?realm=/&authIndexType=service&authIndexValue=PocMFA`.
+  Gotchas hit building it:
+  - **The tree is lost whenever the AM pod is recreated.** In this ForgeOps
+    setup, trees are file-based config in the pod's `emptyDir`, rebuilt from the
+    image on every new pod (eviction, `rollout restart`, the AM recovery in
+    `start-access.sh`). OAuth2 clients, SAML entities and circles of trust are
+    stored in DS and survive. `start-access.sh` (step 4) checks for the tree and
+    re-runs `mfa-setup-tree.sh` when it's missing; otherwise re-run it by hand.
+  - Use the *Platform Username/Password* nodes (`ValidatedUsernameNode` /
+    `ValidatedPasswordNode`, as in the stock `Login` tree), not the classic
+    Username/Password Collectors. The platform nodes resolve the user to their
+    `fr-idm-uuid`, which becomes the session/token subject. With the classic
+    collectors the subject is the bare username, IDM can't map it to a
+    `managed/user`, and the end-user UI dashboard stays empty after an MFA login.
+  - The Registration node's QR code is just an `otpauth://` URI, also returned in a
+    `HiddenValueCallback` with id `mfaDeviceRegistration`. That's what makes it scriptable.
+  - TOTP codes are single-use: AM rejects a code from a 30s step that was already
+    used, so a second login within the same step fails even with a "correct" code.
+  - Device endpoints are addressed by the user's `fr-idm-uuid` (AM's users search
+    attribute), not the username: `/json/realms/root/users/<uuid>/devices/2fa/oath`.
+  - Recovery codes are turned off (`generateRecoveryCodes: false`) to keep the flow
+    simple. To turn them on, set it to `true`, add a *Recovery Code Display Node*
+    after Registration, and set `isRecoveryCodeAllowed: true` on the Verifier. That
+    adds a `recoveryCodeOutcome`; wire it to a *Recovery Code Collector Decision*
+    node (true → Success, false → Failure).
+  - Device profiles are stored unencrypted in the user's `oathDeviceProfiles`
+    attribute (the realm has no *ForgeRock Authenticator (OATH)* service configured,
+    so encryption scheme `NONE` applies). That's fine for a POC. In production,
+    add that service with an encryption keystore.
+  - WebAuthn would slot into the same place (*WebAuthn Registration* /
+    *WebAuthn Authentication* nodes), but it needs a real browser authenticator
+    and an HTTPS origin matching `poc.example.com`, so it can't be tested with curl.
 - **LDAP/DS**: `kubectl port-forward` to `ds-idrepo` and inspect the identity repository.
 - **IDM provisioning**: define a mapping/reconciliation between IDM and DS.
 - **CI/CD**: script this whole runbook (already captured in `deploy.sh`/`teardown.sh`)
