@@ -9,6 +9,7 @@ build and how each was diagnosed and fixed.
 - Deployment method: ForgeOps Helm chart (`identity-platform`), release branch
   `release/7.5-20251119`
 - Repo: [github.com/ForgeRock/forgeops](https://github.com/ForgeRock/forgeops)
+- Command reference (every kubectl/REST/LDAP command used, by task): [COMMANDS.md](COMMANDS.md)
 
 ---
 
